@@ -10,226 +10,205 @@ h2{color:#f7931a;margin:0 0 4px;font-size:16px}
 .sub{opacity:.65;font-size:11px;margin:0 0 10px}
 .pill{display:inline-block;padding:3px 12px;border-radius:99px;font-size:12px;font-weight:800}
 .ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
-pre{background:#0b1020;color:#d6e1ff;padding:8px;border-radius:8px;overflow:auto;max-height:100px;font-size:10px;text-align:left;margin-top:8px}
+pre{background:#0b1020;color:#d6e1ff;padding:8px;border-radius:8px;overflow:auto;max-height:120px;font-size:10px;text-align:left;margin-top:8px}
 .minbtn{background:#f7931a;color:#000;font-weight:900;cursor:pointer;border:none;padding:14px 32px;border-radius:12px;font-size:18px;margin:12px 0;display:block;width:100%}
 .minbtn:hover{background:#ffaa33}
 .stats{font-size:12px;margin:6px 0;opacity:.8}
+#phone{font-family:monospace;color:#f7931a;font-size:13px;margin:6px 0;word-break:break-all}
 </style>
 </head>
 <body>
 <h2>⚡ P2P Game Relay</h2>
-<p class="sub">Pure peer-to-peer — no server needed.</p>
+<p class="sub">Inscription hex = phone number. Dial in & connect!</p>
 <span id="status" class="pill bad">offline</span>
+<div id="phone"></div>
 <div class="stats">Peers: <b id="peerCount">0</b> · Messages: <b id="msgCount">0</b></div>
 <button class="minbtn" id="backBtn">⬇ Minimize & Return</button>
 <pre id="log">…</pre>
 
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 (async()=>{
-const logEl=document.getElementById("log"),statusEl=document.getElementById("status");
-const peerCountEl=document.getElementById("peerCount"),msgCountEl=document.getElementById("msgCount");
-const log=(...a)=>{logEl.textContent=a.map(x=>typeof x==="string"?x:JSON.stringify(x)).join(" ")+"\n"+logEl.textContent.slice(0,2000)};
-const ss=(t)=>{statusEl.textContent=t;statusEl.className="pill "+(t==="connected"?"ok":t.includes("…")?"wait":"bad")};
+/* ── DOM ── */
+const $=id=>document.getElementById(id);
+const logEl=$("log"),statusEl=$("status"),peerCountEl=$("peerCount"),msgCountEl=$("msgCount");
+const log=m=>{logEl.textContent=m+"\n"+logEl.textContent.slice(0,2000)};
+const ss=(t,c)=>{statusEl.textContent=t;statusEl.className="pill "+(c||(t.includes("peer")?"ok":t.includes("…")?"wait":"bad"))};
 
-/* ── Lobby from hash ── */
+/* ── Lobby from URL hash (the inscription hex) ── */
 const LOBBY=decodeURIComponent((location.hash||"").replace(/^#/,""));
-if(!LOBBY){ss("no lobby");log("❌ No lobby in URL hash.");return}
+if(!LOBBY){ss("no lobby","bad");log("❌ No inscription hex in URL hash");return}
 
-/* ── Config ── */
-const TRACKERS=["wss://tracker.openwebtorrent.com","wss://tracker.webtorrent.dev","wss://tracker.btorrent.xyz"];
-const ICE=[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}];
-const NUM_OFFERS=5;
-const REANNOUNCE=30000;
-
-/* ── Identity ── */
-const toHex=a=>Array.from(new Uint8Array(a)).map(b=>b.toString(16).padStart(2,"0")).join("");
-const infoHash=toHex(await crypto.subtle.digest("SHA-1",new TextEncoder().encode(LOBBY)));
-const peerId=toHex(crypto.getRandomValues(new Uint8Array(20)));
-
-log("Room: "+infoHash.slice(0,12)+"… | Me: "+peerId.slice(0,8)+"…");
+/* ── Derive deterministic room "phone number" ── */
+const hashBuf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(LOBBY));
+const PHONE="ord-"+[...new Uint8Array(hashBuf)].map(b=>b.toString(16).padStart(2,"0")).join("").slice(0,16);
+$("phone").textContent="📞 "+PHONE;
+log("📞 Phone #: "+PHONE);
 
 /* ── State ── */
-let openerRef=(window.parent!==window)?window.parent:window.opener;
-let msgCount=0;
-const activePeers=new Map();   /* remotePeerId → {pc, dc} */
-const pendingOffers=new Map(); /* offerId → {pc, dc} */
-let trackerWsList=[];
+let opener=window.opener||((window.parent!==window)?window.parent:null);
+let peer=null,isHost=false,ready=false,msgCount=0;
+const mesh=new Map(); /* peerJsId → DataConnection */
 
 /* ── Helpers ── */
-function rndHex(n){return toHex(crypto.getRandomValues(new Uint8Array(n)))}
-
-function waitForIce(pc){
-  return new Promise(r=>{
-    if(pc.iceGatheringState==="complete")return r();
-    const fn=()=>{if(pc.iceGatheringState==="complete"){pc.removeEventListener("icegatheringstatechange",fn);r()}};
-    pc.addEventListener("icegatheringstatechange",fn);
-    setTimeout(r,5000);
-  });
+function notifyReady(){
+  if(opener)opener.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
 }
 
 function updateUI(){
-  peerCountEl.textContent=activePeers.size;
-  if(activePeers.size>0)ss("connected");
-  else if(trackerWsList.some(w=>w.readyState===1))ss("searching…");
-  else ss("connecting…");
+  peerCountEl.textContent=mesh.size;
+  if(!ready)return;
+  ss(mesh.size?mesh.size+" peer"+(mesh.size>1?"s":""):"waiting for peers…",mesh.size?"ok":"wait");
 }
 
-function notifyInscription(){
-  if(openerRef)openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
-}
+/* ── Wire up a PeerJS DataConnection ── */
+function wire(conn){
+  conn.on("open",()=>{
+    /* deduplicate */
+    if(mesh.has(conn.peer)&&mesh.get(conn.peer).open){conn.close();return}
+    mesh.set(conn.peer,conn);
+    log("✅ "+conn.peer.slice(-8)+" connected");
+    updateUI();notifyReady();
+    if(window.opener)try{window.opener.focus()}catch{}
 
-/* ── Data channel wiring ── */
-function setupDC(dc,remotePeerId,pc){
-  dc.onopen=()=>{
-    const ex=activePeers.get(remotePeerId);
-    if(ex&&ex.dc.readyState==="open"){pc.close();return}
-    activePeers.set(remotePeerId,{pc,dc});
-    log("✅ P2P link to "+remotePeerId.slice(0,8)+"…");
-    updateUI();
-    notifyInscription();
-    if(window.opener){try{window.opener.focus()}catch{}}
-  };
-  dc.onmessage=(ev)=>{
+    /* host → introduce new peer to existing mesh */
+    if(isHost){
+      const others=[...mesh.keys()].filter(id=>id!==conn.peer);
+      if(others.length)conn.send(JSON.stringify({_:"peers",ids:others}));
+    }
+  });
+
+  conn.on("data",raw=>{
+    let d;try{d=JSON.parse(typeof raw==="string"?raw:"")}catch{return}
+
+    /* internal: peer list from host → mesh with everyone */
+    if(d._==="peers"){
+      log("📋 Mesh: connecting to "+d.ids.length+" peer(s)");
+      d.ids.forEach(id=>{
+        if(!mesh.has(id)&&peer&&id!==peer.id)
+          wire(peer.connect(id,{reliable:true,serialization:"none"}));
+      });
+      return;
+    }
+
+    /* game data → forward to inscription */
     msgCount++;msgCountEl.textContent=msgCount;
-    if(!openerRef)return;
-    try{
-      const m=JSON.parse(ev.data);
-      openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"peer-msg",data:m}),"*");
-    }catch{}
-  };
-  dc.onclose=()=>{
-    const p=activePeers.get(remotePeerId);
-    if(p&&p.dc===dc){activePeers.delete(remotePeerId);log("⚠️ Lost "+remotePeerId.slice(0,8)+"…");updateUI()}
-  };
-}
+    if(opener)opener.postMessage(JSON.stringify({lobby:LOBBY,type:"peer-msg",data:d}),"*");
+  });
 
-/* ── Build outgoing offers ── */
-async function buildOffers(n){
-  const out=[];
-  for(let i=0;i<n;i++){
-    const pc=new RTCPeerConnection({iceServers:ICE});
-    const dc=pc.createDataChannel("game");
-    const oid=rndHex(8);
-    pendingOffers.set(oid,{pc,dc});
-    const offer=await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await waitForIce(pc);
-    out.push({offer_id:oid,offer:{type:"offer",sdp:pc.localDescription.sdp}});
-    setTimeout(()=>{if(pendingOffers.has(oid)){pendingOffers.delete(oid);try{pc.close()}catch{}}},60000);
-  }
-  return out;
-}
-
-/* ── Incoming offer from tracker → answer it ── */
-async function onTrackerOffer(msg,ws){
-  const rid=msg.peer_id;
-  if(rid===peerId||activePeers.has(rid))return;
-  try{
-    const pc=new RTCPeerConnection({iceServers:ICE});
-    pc.ondatachannel=ev=>setupDC(ev.channel,rid,pc);
-    await pc.setRemoteDescription({type:"offer",sdp:msg.offer.sdp});
-    const ans=await pc.createAnswer();
-    await pc.setLocalDescription(ans);
-    await waitForIce(pc);
-    ws.send(JSON.stringify({
-      action:"announce",info_hash:infoHash,peer_id:peerId,
-      to_peer_id:rid,offer_id:msg.offer_id,
-      answer:{type:"answer",sdp:pc.localDescription.sdp}
-    }));
-    log("↩️ Answered "+rid.slice(0,8)+"…");
-  }catch(e){log("⚠️ Offer err: "+e.message)}
-}
-
-/* ── Incoming answer from tracker → complete connection ── */
-async function onTrackerAnswer(msg){
-  const oid=msg.offer_id,rid=msg.peer_id;
-  const p=pendingOffers.get(oid);
-  if(!p)return;
-  pendingOffers.delete(oid);
-  if(activePeers.has(rid)){p.pc.close();return}
-  setupDC(p.dc,rid,p.pc);
-  try{await p.pc.setRemoteDescription({type:"answer",sdp:msg.answer.sdp})}
-  catch(e){log("⚠️ Answer err: "+e.message)}
-  log("⬅️ Answer from "+rid.slice(0,8)+"…");
-}
-
-/* ── Announce to a tracker ── */
-async function announce(ws,event){
-  if(ws.readyState!==1)return;
-  const offers=await buildOffers(NUM_OFFERS);
-  const msg={action:"announce",info_hash:infoHash,peer_id:peerId,numwant:NUM_OFFERS,offers};
-  if(event)msg.event=event;
-  ws.send(JSON.stringify(msg));
-  log("📡 Announced ("+offers.length+" offers)");
-}
-
-/* ── Connect to a tracker ── */
-function connectTracker(url){
-  const tag=url.split("//")[1]?.split("/")[0]||url;
-  const ws=new WebSocket(url);
-  ws.onopen=()=>{
-    log("✅ Tracker: "+tag);
-    trackerWsList.push(ws);
+  conn.on("close",()=>{
+    mesh.delete(conn.peer);
+    log("❌ "+conn.peer.slice(-8)+" left");
     updateUI();
-    announce(ws,"started");
-  };
-  ws.onmessage=ev=>{
-    try{
-      const m=JSON.parse(ev.data);
-      if(m.offer)onTrackerOffer(m,ws);
-      else if(m.answer)onTrackerAnswer(m);
-    }catch{}
-  };
-  ws.onclose=()=>{
-    trackerWsList=trackerWsList.filter(s=>s!==ws);
-    log("⚠️ Tracker lost: "+tag);
-    updateUI();
-    setTimeout(()=>connectTracker(url),10000);
-  };
-  ws.onerror=()=>{};
+
+    /* host dropped — try to reconnect or take over */
+    if(conn.peer===PHONE&&!isHost){
+      log("👑 Host left — reconnecting in a moment…");
+      setTimeout(()=>{
+        if(peer&&peer.open){
+          const c=peer.connect(PHONE,{reliable:true,serialization:"none"});
+          wire(c);
+        }
+      },1500+Math.random()*2000);
+    }
+  });
+
+  conn.on("error",e=>log("⚠️ "+conn.peer.slice(-8)+": "+e.type));
 }
 
-/* ── Re-announce periodically to find new peers ── */
-setInterval(()=>{
-  for(const ws of trackerWsList)announce(ws);
-},REANNOUNCE);
-
-/* ── Listen for postMessage from inscription ── */
+/* ── postMessage bridge (inscription ↔ mesh) ── */
 window.addEventListener("message",ev=>{
-  let msg;
-  try{msg=typeof ev.data==="string"?JSON.parse(ev.data):ev.data}catch{return}
+  let msg;try{msg=typeof ev.data==="string"?JSON.parse(ev.data):ev.data}catch{return}
   if(!msg||msg.lobby!==LOBBY)return;
-  if(ev.source)openerRef=ev.source;
+  if(ev.source)opener=ev.source;
 
-  if(msg.type==="ping"){
-    if(trackerWsList.some(w=>w.readyState===1))notifyInscription();
-    return;
-  }
+  if(msg.type==="ping"){if(ready)notifyReady();return}
 
-  /* Forward to all connected peers via data channels */
-  const fwd=JSON.stringify((({lobby,...r})=>r)(msg));
-  for(const[,{dc}]of activePeers){
-    if(dc.readyState==="open"){try{dc.send(fwd);msgCount++;msgCountEl.textContent=msgCount}catch{}}
-  }
+  /* forward game message to every mesh peer */
+  const s=JSON.stringify(msg);
+  for(const[,c]of mesh)if(c.open){try{c.send(s);msgCount++;msgCountEl.textContent=msgCount}catch{}}
 });
 
-/* ── Cleanup on close ── */
-window.addEventListener("beforeunload",()=>{
-  for(const ws of trackerWsList){
-    try{ws.send(JSON.stringify({action:"announce",info_hash:infoHash,peer_id:peerId,event:"stopped"}))}catch{}
-  }
-});
+/* ── Claim the phone number (become host) ── */
+function claimHost(){
+  return new Promise(resolve=>{
+    peer=new Peer(PHONE,{debug:0});
+    let done=false;
 
-/* ── Minimize button ── */
-document.getElementById("backBtn").onclick=()=>{
+    peer.on("open",()=>{
+      if(done)return;done=true;
+      isHost=true;ready=true;
+      log("👑 First caller — you're the host");
+      ss("waiting for peers…","wait");
+      notifyReady();resolve(true);
+    });
+
+    peer.on("connection",c=>wire(c));
+
+    peer.on("error",e=>{
+      if(done)return;done=true;
+      if(e.type==="unavailable-id")log("📞 Someone already hosting. Joining…");
+      else log("⚠️ "+e.type);
+      resolve(false);
+    });
+
+    peer.on("disconnected",()=>{
+      if(isHost){log("⚠️ Signal lost — reconnecting…");try{peer.reconnect()}catch{}}
+    });
+
+    setTimeout(()=>{if(!done){done=true;resolve(false)}},8000);
+  });
+}
+
+/* ── Dial in as a regular peer ── */
+function dial(){
+  if(peer)try{peer.destroy()}catch{}
+  peer=new Peer(undefined,{debug:0});
+
+  peer.on("open",id=>{
+    ready=true;
+    log("🔗 Your ID: "+id.slice(-8));
+    log("📞 Calling host…");
+    ss("connecting…","wait");
+    notifyReady();
+    wire(peer.connect(PHONE,{reliable:true,serialization:"none"}));
+  });
+
+  peer.on("connection",c=>wire(c)); /* mesh peers connecting to us */
+
+  peer.on("error",e=>{
+    if(e.type==="peer-unavailable"){
+      log("📞 No host found — becoming host…");
+      claimHost().then(ok=>{if(!ok)setTimeout(dial,3000)});
+    }else log("⚠️ "+e.type);
+  });
+
+  peer.on("disconnected",()=>{log("⚠️ Signal lost — reconnecting…");try{peer.reconnect()}catch{}});
+}
+
+/* ── Periodic: re-discover host if we lost them ── */
+setInterval(()=>{
+  if(isHost||!peer||!peer.open)return;
+  /* if not connected to host, try again */
+  if(!mesh.has(PHONE)){
+    log("🔄 Re-dialing host…");
+    wire(peer.connect(PHONE,{reliable:true,serialization:"none"}));
+  }
+},15000);
+
+/* ── Cleanup ── */
+window.addEventListener("beforeunload",()=>{if(peer)try{peer.destroy()}catch{}});
+
+/* ── Minimize ── */
+$("backBtn").onclick=()=>{
   try{window.resizeTo(200,80);window.moveTo(screen.width-220,screen.height-120)}catch{}
-  if(window.opener){try{window.opener.focus()}catch{}}
+  if(window.opener)try{window.opener.focus()}catch{}
 };
 
-/* ── Start ── */
-ss("connecting…");
-log("🔍 Finding peers for "+LOBBY.slice(0,16)+"…");
-TRACKERS.forEach(connectTracker);
+/* ── GO: dial the phone number ── */
+ss("dialing…","wait");
+log("🔍 Dialing "+LOBBY.slice(0,16)+"…");
+if(!await claimHost())dial();
 })();
 </script>
 </body>
