@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>⚡ Game Relay</title>
+<title>⚡ P2P Game Relay</title>
 <style>
 body{font-family:system-ui,sans-serif;margin:0;padding:14px;background:#0d0d0d;color:#ccc;text-align:center}
 h2{color:#f7931a;margin:0 0 4px;font-size:16px}
@@ -17,80 +17,206 @@ pre{background:#0b1020;color:#d6e1ff;padding:8px;border-radius:8px;overflow:auto
 </style>
 </head>
 <body>
-<h2>⚡ Game Relay</h2>
-<p class="sub">Networking hub — connects your game to other players.</p>
+<h2>⚡ P2P Game Relay</h2>
+<p class="sub">Pure peer-to-peer — no server needed.</p>
 <span id="status" class="pill bad">offline</span>
-<div class="stats">Messages: <b id="msgCount">0</b></div>
+<div class="stats">Peers: <b id="peerCount">0</b> · Messages: <b id="msgCount">0</b></div>
 <button class="minbtn" id="backBtn">⬇ Minimize & Return</button>
 <pre id="log">…</pre>
 
 <script>
-(()=>{
+(async()=>{
 const logEl=document.getElementById("log"),statusEl=document.getElementById("status");
-const msgCountEl=document.getElementById("msgCount");
-
+const peerCountEl=document.getElementById("peerCount"),msgCountEl=document.getElementById("msgCount");
 const log=(...a)=>{logEl.textContent=a.map(x=>typeof x==="string"?x:JSON.stringify(x)).join(" ")+"\n"+logEl.textContent.slice(0,2000)};
-const ss=(t)=>{statusEl.textContent=t;statusEl.className="pill "+(t==="relaying"?"ok":t.includes("…")?"wait":"bad")};
+const ss=(t)=>{statusEl.textContent=t;statusEl.className="pill "+(t==="connected"?"ok":t.includes("…")?"wait":"bad")};
 
 /* ── Lobby from hash ── */
 const LOBBY=decodeURIComponent((location.hash||"").replace(/^#/,""));
 if(!LOBBY){ss("no lobby");log("❌ No lobby in URL hash.");return}
 
-const WSS_URL="wss://ord-webrtc-signal.getord.workers.dev/ws?room="+encodeURIComponent(LOBBY);
+/* ── Config ── */
+const TRACKERS=["wss://tracker.openwebtorrent.com","wss://tracker.webtorrent.dev","wss://tracker.btorrent.xyz"];
+const ICE=[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}];
+const NUM_OFFERS=5;
+const REANNOUNCE=30000;
 
-let ws=null,openerRef=null,msgCount=0;
+/* ── Identity ── */
+const toHex=a=>Array.from(new Uint8Array(a)).map(b=>b.toString(16).padStart(2,"0")).join("");
+const infoHash=toHex(await crypto.subtle.digest("SHA-1",new TextEncoder().encode(LOBBY)));
+const peerId=toHex(crypto.getRandomValues(new Uint8Array(20)));
 
-/* ── Connect to signaling server as broadcast hub ── */
-function connectWS(){
-  ss("connecting…");log("⏳ Connecting to room: "+LOBBY.slice(0,16)+"…");
-  ws=new WebSocket(WSS_URL);
+log("Room: "+infoHash.slice(0,12)+"… | Me: "+peerId.slice(0,8)+"…");
 
-  ws.onopen=()=>{
-    log("✅ WebSocket connected to room!");
-    ss("relaying");
-    /* Tell inscription we're ready */
-    if(openerRef)openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
-  };
+/* ── State ── */
+let openerRef=(window.parent!==window)?window.parent:window.opener;
+let msgCount=0;
+const activePeers=new Map();   /* remotePeerId → {pc, dc} */
+const pendingOffers=new Map(); /* offerId → {pc, dc} */
+let trackerWsList=[];
 
-  ws.onmessage=(ev)=>{
-    msgCount++;msgCountEl.textContent=msgCount;
-    /* Forward messages from other relays → inscription */
-    if(openerRef){
-      try{
-        const msg=JSON.parse(ev.data);
-        openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"peer-msg",data:msg}),"*");
-      }catch(e){log("⚠️ Parse error: "+e)}
-    }
-  };
+/* ── Helpers ── */
+function rndHex(n){return toHex(crypto.getRandomValues(new Uint8Array(n)))}
 
-  ws.onclose=()=>{
-    log("⚠️ WebSocket closed. Reconnecting in 3s…");
-    ss("reconnecting…");
-    setTimeout(connectWS,3000);
-  };
-  ws.onerror=()=>{log("❌ WebSocket error")};
+function waitForIce(pc){
+  return new Promise(r=>{
+    if(pc.iceGatheringState==="complete")return r();
+    const fn=()=>{if(pc.iceGatheringState==="complete"){pc.removeEventListener("icegatheringstatechange",fn);r()}};
+    pc.addEventListener("icegatheringstatechange",fn);
+    setTimeout(r,5000);
+  });
 }
 
+function updateUI(){
+  peerCountEl.textContent=activePeers.size;
+  if(activePeers.size>0)ss("connected");
+  else if(trackerWsList.some(w=>w.readyState===1))ss("searching…");
+  else ss("connecting…");
+}
+
+function notifyInscription(){
+  if(openerRef)openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
+}
+
+/* ── Data channel wiring ── */
+function setupDC(dc,remotePeerId,pc){
+  dc.onopen=()=>{
+    const ex=activePeers.get(remotePeerId);
+    if(ex&&ex.dc.readyState==="open"){pc.close();return}
+    activePeers.set(remotePeerId,{pc,dc});
+    log("✅ P2P link to "+remotePeerId.slice(0,8)+"…");
+    updateUI();
+    notifyInscription();
+    if(window.opener){try{window.opener.focus()}catch{}}
+  };
+  dc.onmessage=(ev)=>{
+    msgCount++;msgCountEl.textContent=msgCount;
+    if(!openerRef)return;
+    try{
+      const m=JSON.parse(ev.data);
+      openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"peer-msg",data:m}),"*");
+    }catch{}
+  };
+  dc.onclose=()=>{
+    const p=activePeers.get(remotePeerId);
+    if(p&&p.dc===dc){activePeers.delete(remotePeerId);log("⚠️ Lost "+remotePeerId.slice(0,8)+"…");updateUI()}
+  };
+}
+
+/* ── Build outgoing offers ── */
+async function buildOffers(n){
+  const out=[];
+  for(let i=0;i<n;i++){
+    const pc=new RTCPeerConnection({iceServers:ICE});
+    const dc=pc.createDataChannel("game");
+    const oid=rndHex(8);
+    pendingOffers.set(oid,{pc,dc});
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitForIce(pc);
+    out.push({offer_id:oid,offer:{type:"offer",sdp:pc.localDescription.sdp}});
+    setTimeout(()=>{if(pendingOffers.has(oid)){pendingOffers.delete(oid);try{pc.close()}catch{}}},60000);
+  }
+  return out;
+}
+
+/* ── Incoming offer from tracker → answer it ── */
+async function onTrackerOffer(msg,ws){
+  const rid=msg.peer_id;
+  if(rid===peerId||activePeers.has(rid))return;
+  try{
+    const pc=new RTCPeerConnection({iceServers:ICE});
+    pc.ondatachannel=ev=>setupDC(ev.channel,rid,pc);
+    await pc.setRemoteDescription({type:"offer",sdp:msg.offer.sdp});
+    const ans=await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+    await waitForIce(pc);
+    ws.send(JSON.stringify({
+      action:"announce",info_hash:infoHash,peer_id:peerId,
+      to_peer_id:rid,offer_id:msg.offer_id,
+      answer:{type:"answer",sdp:pc.localDescription.sdp}
+    }));
+    log("↩️ Answered "+rid.slice(0,8)+"…");
+  }catch(e){log("⚠️ Offer err: "+e.message)}
+}
+
+/* ── Incoming answer from tracker → complete connection ── */
+async function onTrackerAnswer(msg){
+  const oid=msg.offer_id,rid=msg.peer_id;
+  const p=pendingOffers.get(oid);
+  if(!p)return;
+  pendingOffers.delete(oid);
+  if(activePeers.has(rid)){p.pc.close();return}
+  setupDC(p.dc,rid,p.pc);
+  try{await p.pc.setRemoteDescription({type:"answer",sdp:msg.answer.sdp})}
+  catch(e){log("⚠️ Answer err: "+e.message)}
+  log("⬅️ Answer from "+rid.slice(0,8)+"…");
+}
+
+/* ── Announce to a tracker ── */
+async function announce(ws,event){
+  if(ws.readyState!==1)return;
+  const offers=await buildOffers(NUM_OFFERS);
+  const msg={action:"announce",info_hash:infoHash,peer_id:peerId,numwant:NUM_OFFERS,offers};
+  if(event)msg.event=event;
+  ws.send(JSON.stringify(msg));
+  log("📡 Announced ("+offers.length+" offers)");
+}
+
+/* ── Connect to a tracker ── */
+function connectTracker(url){
+  const tag=url.split("//")[1]?.split("/")[0]||url;
+  const ws=new WebSocket(url);
+  ws.onopen=()=>{
+    log("✅ Tracker: "+tag);
+    trackerWsList.push(ws);
+    updateUI();
+    announce(ws,"started");
+  };
+  ws.onmessage=ev=>{
+    try{
+      const m=JSON.parse(ev.data);
+      if(m.offer)onTrackerOffer(m,ws);
+      else if(m.answer)onTrackerAnswer(m);
+    }catch{}
+  };
+  ws.onclose=()=>{
+    trackerWsList=trackerWsList.filter(s=>s!==ws);
+    log("⚠️ Tracker lost: "+tag);
+    updateUI();
+    setTimeout(()=>connectTracker(url),10000);
+  };
+  ws.onerror=()=>{};
+}
+
+/* ── Re-announce periodically to find new peers ── */
+setInterval(()=>{
+  for(const ws of trackerWsList)announce(ws);
+},REANNOUNCE);
+
 /* ── Listen for postMessage from inscription ── */
-window.addEventListener("message",(ev)=>{
+window.addEventListener("message",ev=>{
   let msg;
   try{msg=typeof ev.data==="string"?JSON.parse(ev.data):ev.data}catch{return}
   if(!msg||msg.lobby!==LOBBY)return;
   if(ev.source)openerRef=ev.source;
 
-  /* Ping → respond with relay-ready if WS is open */
   if(msg.type==="ping"){
-    if(openerRef&&ws&&ws.readyState===1){
-      openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
-    }
+    if(trackerWsList.some(w=>w.readyState===1))notifyInscription();
     return;
   }
 
-  /* Forward game messages → signaling server → all other relays */
-  if(ws&&ws.readyState===1){
-    const fwd={...msg};delete fwd.lobby; /* strip lobby field to save bandwidth */
-    ws.send(JSON.stringify(fwd));
-    msgCount++;msgCountEl.textContent=msgCount;
+  /* Forward to all connected peers via data channels */
+  const fwd=JSON.stringify((({lobby,...r})=>r)(msg));
+  for(const[,{dc}]of activePeers){
+    if(dc.readyState==="open"){try{dc.send(fwd);msgCount++;msgCountEl.textContent=msgCount}catch{}}
+  }
+});
+
+/* ── Cleanup on close ── */
+window.addEventListener("beforeunload",()=>{
+  for(const ws of trackerWsList){
+    try{ws.send(JSON.stringify({action:"announce",info_hash:infoHash,peer_id:peerId,event:"stopped"}))}catch{}
   }
 });
 
@@ -101,11 +227,9 @@ document.getElementById("backBtn").onclick=()=>{
 };
 
 /* ── Start ── */
-const parentRef=(window.parent!==window)?window.parent:window.opener;
-if(parentRef)openerRef=parentRef;
-
-connectWS();
-log("Lobby: "+LOBBY.slice(0,20)+"…");
+ss("connecting…");
+log("🔍 Finding peers for "+LOBBY.slice(0,16)+"…");
+TRACKERS.forEach(connectTracker);
 })();
 </script>
 </body>
