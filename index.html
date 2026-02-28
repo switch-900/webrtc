@@ -1,214 +1,185 @@
 <!doctype html>
 <html>
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>⚡ P2P Game Relay</title>
-<style>
-body{font-family:system-ui,sans-serif;margin:0;padding:14px;background:#0d0d0d;color:#ccc;text-align:center}
-h2{color:#f7931a;margin:0 0 4px;font-size:16px}
-.sub{opacity:.65;font-size:11px;margin:0 0 10px}
-.pill{display:inline-block;padding:3px 12px;border-radius:99px;font-size:12px;font-weight:800}
-.ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
-pre{background:#0b1020;color:#d6e1ff;padding:8px;border-radius:8px;overflow:auto;max-height:120px;font-size:10px;text-align:left;margin-top:8px}
-.minbtn{background:#f7931a;color:#000;font-weight:900;cursor:pointer;border:none;padding:14px 32px;border-radius:12px;font-size:18px;margin:12px 0;display:block;width:100%}
-.minbtn:hover{background:#ffaa33}
-.stats{font-size:12px;margin:6px 0;opacity:.8}
-#phone{font-family:monospace;color:#f7931a;font-size:13px;margin:6px 0;word-break:break-all}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Relay Companion</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:14px;background:#0d0d0d;color:#ccc}
+    h2{color:#f7931a;margin:0 0 6px;font-size:18px}
+    .sub{opacity:.65;font-size:12px;margin:0 0 12px}
+    .pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:11px;font-weight:800}
+    .ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
+    pre{background:#0b1020;color:#d6e1ff;padding:12px;border-radius:10px;overflow:auto;max-height:55vh}
+    .hex{font-family:monospace;font-size:11px;color:#666;word-break:break-all;margin:6px 0 0}
+    .back{background:#f7931a;color:#000;font-weight:800;cursor:pointer;border:none;padding:8px 16px;border-radius:8px;font-size:13px;margin-top:10px}
+    .back:hover{background:#ffaa33}
+  </style>
 </head>
 <body>
-<h2>⚡ P2P Game Relay</h2>
-<p class="sub">Inscription hex = phone number. Dial in & connect!</p>
-<span id="status" class="pill bad">offline</span>
-<div id="phone"></div>
-<div class="stats">Peers: <b id="peerCount">0</b> · Messages: <b id="msgCount">0</b></div>
-<button class="minbtn" id="backBtn">⬇ Minimize & Return</button>
-<pre id="log">…</pre>
+  <h2>⚡ Relay Companion</h2>
+  <p class="sub">Keep this tab open. Proxies fetch requests for the inscription over WebRTC.</p>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span id="status" class="pill bad">offline</span>
+    <button class="back" id="backBtn">← Back to Inscription</button>
+  </div>
+  <p class="hex" id="lobbyId"></p>
+  <pre id="log">…</pre>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
-(async()=>{
-/* ── DOM ── */
-const $=id=>document.getElementById(id);
-const logEl=$("log"),statusEl=$("status"),peerCountEl=$("peerCount"),msgCountEl=$("msgCount");
-const log=m=>{logEl.textContent=m+"\n"+logEl.textContent.slice(0,2000)};
-const ss=(t,c)=>{statusEl.textContent=t;statusEl.className="pill "+(c||(t.includes("peer")?"ok":t.includes("…")?"wait":"bad"))};
+(() => {
+  const logEl = document.getElementById("log");
+  const statusEl = document.getElementById("status");
+  const lobbyEl = document.getElementById("lobbyId");
 
-/* ── Lobby from URL hash (the inscription hex) ── */
-const LOBBY=decodeURIComponent((location.hash||"").replace(/^#/,""));
-if(!LOBBY){ss("no lobby","bad");log("❌ No inscription hex in URL hash");return}
+  const log = (...a) => {
+    const m = a.map(x => typeof x === "string" ? x : JSON.stringify(x, null, 2)).join(" ");
+    logEl.textContent = m + "\n\n" + logEl.textContent;
+  };
+  const setStatus = (t) => {
+    statusEl.textContent = t;
+    statusEl.className = "pill " + (t === "connected" || t === "relaying" ? "ok" : t.includes("…") ? "wait" : "bad");
+  };
 
-/* ── Derive deterministic room "phone number" ── */
-const hashBuf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(LOBBY));
-const PHONE="ord-"+[...new Uint8Array(hashBuf)].map(b=>b.toString(16).padStart(2,"0")).join("").slice(0,16);
-$("phone").textContent="📞 "+PHONE;
-log("📞 Phone #: "+PHONE);
+  /* ── Lobby = inscription hex from URL hash ── */
+  const LOBBY = decodeURIComponent((location.hash || "").replace(/^#/, ""));
+  if (!LOBBY) {
+    setStatus("no lobby");
+    log("❌ No inscription hex in URL hash. Open this page from the inscription.");
+    return;
+  }
 
-/* ── State ── */
-let opener=window.opener||((window.parent!==window)?window.parent:null);
-let peer=null,isHost=false,ready=false,msgCount=0;
-const mesh=new Map(); /* peerJsId → DataConnection */
+  lobbyEl.textContent = "lobby: " + LOBBY.slice(0, 12) + "…" + LOBBY.slice(-6);
 
-/* ── Helpers ── */
-function notifyReady(){
-  if(opener)opener.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
-}
+  let pc = null, dc = null, fetchCount = 0;
+  let openerRef = null; // reference to inscription window (via event.source)
 
-function updateUI(){
-  peerCountEl.textContent=mesh.size;
-  if(!ready)return;
-  ss(mesh.size?mesh.size+" peer"+(mesh.size>1?"s":""):"waiting for peers…",mesh.size?"ok":"wait");
-}
+  /* ── Listen for postMessage from inscription ── */
+  window.addEventListener("message", async (ev) => {
+    let msg;
+    try { msg = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data; } catch { return; }
+    if (!msg || msg.lobby !== LOBBY) return;
 
-/* ── Wire up a PeerJS DataConnection ── */
-function wire(conn){
-  conn.on("open",()=>{
-    /* deduplicate */
-    if(mesh.has(conn.peer)&&mesh.get(conn.peer).open){conn.close();return}
-    mesh.set(conn.peer,conn);
-    log("✅ "+conn.peer.slice(-8)+" connected");
-    updateUI();notifyReady();
-    if(window.opener)try{window.opener.focus()}catch{}
+    // Save reference to inscription window from event.source
+    if (ev.source) openerRef = ev.source;
 
-    /* host → introduce new peer to existing mesh */
-    if(isHost){
-      const others=[...mesh.keys()].filter(id=>id!==conn.peer);
-      if(others.length)conn.send(JSON.stringify({_:"peers",ids:others}));
-    }
-  });
-
-  conn.on("data",raw=>{
-    let d;try{d=JSON.parse(typeof raw==="string"?raw:"")}catch{return}
-
-    /* internal: peer list from host → mesh with everyone */
-    if(d._==="peers"){
-      log("📋 Mesh: connecting to "+d.ids.length+" peer(s)");
-      d.ids.forEach(id=>{
-        if(!mesh.has(id)&&peer&&id!==peer.id)
-          wire(peer.connect(id,{reliable:true,serialization:"none"}));
-      });
+    /* Ping → respond with relay-ready */
+    if (msg.type === "ping") {
+      if (openerRef) {
+        openerRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
+      }
       return;
     }
 
-    /* game data → forward to inscription */
-    msgCount++;msgCountEl.textContent=msgCount;
-    if(opener)opener.postMessage(JSON.stringify({lobby:LOBBY,type:"peer-msg",data:d}),"*");
-  });
+    /* Offer → create answer */
+    if (msg.type === "offer" && msg.sdp) {
+      log("⬅️ Offer received. Creating answer…");
 
-  conn.on("close",()=>{
-    mesh.delete(conn.peer);
-    log("❌ "+conn.peer.slice(-8)+" left");
-    updateUI();
+      pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+        ]
+      });
 
-    /* host dropped — try to reconnect or take over */
-    if(conn.peer===PHONE&&!isHost){
-      log("👑 Host left — reconnecting in a moment…");
-      setTimeout(()=>{
-        if(peer&&peer.open){
-          const c=peer.connect(PHONE,{reliable:true,serialization:"none"});
-          wire(c);
+      pc.onicecandidate = (e) => {
+        if (e.candidate && openerRef) {
+          openerRef.postMessage(JSON.stringify({
+            lobby: LOBBY, type: "ice", candidate: e.candidate
+          }), "*");
         }
-      },1500+Math.random()*2000);
+      };
+
+      pc.onconnectionstatechange = () => {
+        log("🔌", pc.connectionState);
+        if (pc.connectionState === "connected") setStatus("connected");
+        if (pc.connectionState === "disconnected" || pc.connectionState === "failed") setStatus(pc.connectionState);
+      };
+
+      pc.ondatachannel = (event) => {
+        dc = event.channel;
+        log("✅ DataChannel:", dc.label);
+
+        dc.onopen = () => {
+          log("✅ Relay active — proxying fetches!");
+          setStatus("relaying");
+          // Auto-switch back to inscription tab
+          if (window.opener) { try { window.opener.focus(); } catch {} }
+        };
+        dc.onclose = () => { log("⚠️ Channel closed."); setStatus("offline"); };
+
+        dc.onmessage = async (ev) => {
+          let m;
+          try { m = JSON.parse(ev.data); } catch { return; }
+          if (m.type !== "fetch" || !m.id || !m.url) return;
+
+          fetchCount++;
+          log("➡️ [" + fetchCount + "] " + m.url);
+
+          try {
+            const resp = await fetch(m.url, {
+              method: m.method || "GET",
+              headers: m.headers || { accept: "application/json" },
+            });
+            const body = await resp.text();
+            dc.send(JSON.stringify({
+              type: "fetch_result", id: m.id, url: m.url,
+              ok: resp.ok, status: resp.status, statusText: resp.statusText,
+              headers: Object.fromEntries(resp.headers.entries()), body
+            }));
+            log("✅ [" + fetchCount + "] " + resp.status + " (" + body.length + "b)");
+          } catch (e) {
+            dc.send(JSON.stringify({
+              type: "fetch_result", id: m.id, url: m.url,
+              ok: false, status: 0, statusText: "FETCH_ERROR",
+              headers: {}, body: String(e?.message || e)
+            }));
+            log("❌ [" + fetchCount + "] " + String(e));
+          }
+        };
+      };
+
+      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      openerRef.postMessage(JSON.stringify({
+        lobby: LOBBY, type: "answer", sdp: answer.sdp
+      }), "*");
+      log("➡️ Answer sent. Connecting P2P…");
+      setStatus("connecting…");
+    }
+
+    /* ICE candidates */
+    if (msg.type === "ice" && msg.candidate && pc) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log("⚠️ ICE:", String(e)); }
     }
   });
 
-  conn.on("error",e=>log("⚠️ "+conn.peer.slice(-8)+": "+e.type));
-}
+  /* ── Back button → focus opener tab ── */
+  document.getElementById("backBtn").onclick = () => {
+    if (window.opener) {
+      window.opener.focus();
+    } else {
+      history.back();
+    }
+  };
 
-/* ── postMessage bridge (inscription ↔ mesh) ── */
-window.addEventListener("message",ev=>{
-  let msg;try{msg=typeof ev.data==="string"?JSON.parse(ev.data):ev.data}catch{return}
-  if(!msg||msg.lobby!==LOBBY)return;
-  if(ev.source)opener=ev.source;
+  /* ── Signal ready (also via window.opener if available) ── */
+  setStatus("waiting…");
+  log("⏳ Lobby: " + LOBBY);
+  log("Waiting for inscription to ping…");
 
-  if(msg.type==="ping"){if(ready)notifyReady();return}
-
-  /* forward game message to every mesh peer */
-  const s=JSON.stringify(msg);
-  for(const[,c]of mesh)if(c.open){try{c.send(s);msgCount++;msgCountEl.textContent=msgCount}catch{}}
-});
-
-/* ── Claim the phone number (become host) ── */
-function claimHost(){
-  return new Promise(resolve=>{
-    peer=new Peer(PHONE,{debug:0});
-    let done=false;
-
-    peer.on("open",()=>{
-      if(done)return;done=true;
-      isHost=true;ready=true;
-      log("👑 First caller — you're the host");
-      ss("waiting for peers…","wait");
-      notifyReady();resolve(true);
-    });
-
-    peer.on("connection",c=>wire(c));
-
-    peer.on("error",e=>{
-      if(done)return;done=true;
-      if(e.type==="unavailable-id")log("📞 Someone already hosting. Joining…");
-      else log("⚠️ "+e.type);
-      resolve(false);
-    });
-
-    peer.on("disconnected",()=>{
-      if(isHost){log("⚠️ Signal lost — reconnecting…");try{peer.reconnect()}catch{}}
-    });
-
-    setTimeout(()=>{if(!done){done=true;resolve(false)}},8000);
-  });
-}
-
-/* ── Dial in as a regular peer ── */
-function dial(){
-  if(peer)try{peer.destroy()}catch{}
-  peer=new Peer(undefined,{debug:0});
-
-  peer.on("open",id=>{
-    ready=true;
-    log("🔗 Your ID: "+id.slice(-8));
-    log("📞 Calling host…");
-    ss("connecting…","wait");
-    notifyReady();
-    wire(peer.connect(PHONE,{reliable:true,serialization:"none"}));
-  });
-
-  peer.on("connection",c=>wire(c)); /* mesh peers connecting to us */
-
-  peer.on("error",e=>{
-    if(e.type==="peer-unavailable"){
-      log("📞 No host found — becoming host…");
-      claimHost().then(ok=>{if(!ok)setTimeout(dial,3000)});
-    }else log("⚠️ "+e.type);
-  });
-
-  peer.on("disconnected",()=>{log("⚠️ Signal lost — reconnecting…");try{peer.reconnect()}catch{}});
-}
-
-/* ── Periodic: re-discover host if we lost them ── */
-setInterval(()=>{
-  if(isHost||!peer||!peer.open)return;
-  /* if not connected to host, try again */
-  if(!mesh.has(PHONE)){
-    log("🔄 Re-dialing host…");
-    wire(peer.connect(PHONE,{reliable:true,serialization:"none"}));
+  // Signal ready to parent (iframe) or opener (popup)
+  const parentRef = (window.parent !== window) ? window.parent : window.opener;
+  if (parentRef) {
+    try {
+      parentRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
+      log("✅ Sent ready to parent.");
+      setStatus("waiting for offer…");
+    } catch {}
   }
-},15000);
-
-/* ── Cleanup ── */
-window.addEventListener("beforeunload",()=>{if(peer)try{peer.destroy()}catch{}});
-
-/* ── Minimize ── */
-$("backBtn").onclick=()=>{
-  try{window.resizeTo(200,80);window.moveTo(screen.width-220,screen.height-120)}catch{}
-  if(window.opener)try{window.opener.focus()}catch{}
-};
-
-/* ── GO: dial the phone number ── */
-ss("dialing…","wait");
-log("🔍 Dialing "+LOBBY.slice(0,16)+"…");
-if(!await claimHost())dial();
 })();
 </script>
 </body>
