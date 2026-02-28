@@ -1,0 +1,123 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Relay Companion</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:14px;background:#0d0d0d;color:#ccc}
+    h2{color:#f7931a;margin:0 0 6px;font-size:18px}
+    .sub{opacity:.65;font-size:12px;margin:0 0 12px}
+    .pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:11px;font-weight:800}
+    .ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
+    pre{background:#0b1020;color:#d6e1ff;padding:12px;border-radius:10px;overflow:auto;max-height:55vh}
+  </style>
+</head>
+<body>
+  <h2>⚡ Relay Companion</h2>
+  <p class="sub">Keep this tab open while using the inscription. It fetches mempool data and returns it over WebRTC.</p>
+  <div><span id="status" class="pill bad">offline</span></div>
+  <pre id="log">…</pre>
+
+<script>
+(() => {
+  const logEl = document.getElementById("log");
+  const statusEl = document.getElementById("status");
+  const log = (...a) => { const m=a.map(x=>typeof x==="string"?x:JSON.stringify(x,null,2)).join(" "); logEl.textContent = m+"\n\n"+logEl.textContent; };
+  const setStatus = (t) => { statusEl.textContent=t; statusEl.className="pill "+(t==="connected"?"ok":t.includes("…")?"wait":"bad"); };
+
+  const params = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  const wss = params.get("wss");
+  if (!wss) { setStatus("missing wss"); log("❌ Missing #wss=... in URL"); return; }
+
+  let ws=null, pc=null, dc=null;
+
+  setStatus("connecting…");
+  ws = new WebSocket(wss);
+
+  ws.onopen = () => log("✅ Signaling connected:", wss);
+
+  ws.onmessage = async (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.from === "relay") return;
+
+    if (msg.type === "offer" && msg.sdp) {
+      log("⬅️ Offer received. Creating RTCPeerConnection…");
+
+      pc = new RTCPeerConnection({
+        iceServers: [
+          { urls:"stun:stun.l.google.com:19302" },
+          { urls:"stun:stun1.l.google.com:19302" },
+          { urls:"stun:stun2.l.google.com:19302" },
+          { urls:"stun:stun3.l.google.com:19302" },
+          { urls:"stun:stun4.l.google.com:19302" },
+        ]
+      });
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) ws.send(JSON.stringify({ from:"relay", type:"ice", candidate:e.candidate }));
+      };
+
+      pc.ondatachannel = (event) => {
+        dc = event.channel;
+        log("✅ DataChannel:", dc.label);
+
+        dc.onopen = () => { log("✅ Relay connected."); setStatus("connected"); };
+        dc.onclose = () => { log("⚠️ DataChannel closed."); setStatus("offline"); };
+
+        dc.onmessage = async (ev) => {
+          let m; try { m = JSON.parse(ev.data); } catch { return; }
+          if (m.type !== "fetch" || !m.id || !m.url) return;
+
+          log("➡️ fetch:", m.url);
+          try {
+            const resp = await fetch(m.url, {
+              method: m.method || "GET",
+              headers: m.headers || { accept:"application/json" },
+            });
+            const body = await resp.text();
+            dc.send(JSON.stringify({
+              type:"fetch_result",
+              id:m.id,
+              url:m.url,
+              ok: resp.ok,
+              status: resp.status,
+              statusText: resp.statusText,
+              headers: Object.fromEntries(resp.headers.entries()),
+              body
+            }));
+            log("✅", resp.status, "bytes:", body.length);
+          } catch (e) {
+            dc.send(JSON.stringify({
+              type:"fetch_result",
+              id:m.id,
+              url:m.url,
+              ok:false,
+              status:0,
+              statusText:"FETCH_ERROR",
+              headers:{},
+              body:String(e?.message||e)
+            }));
+            log("❌", String(e));
+          }
+        };
+      };
+
+      await pc.setRemoteDescription({ type:"offer", sdp: msg.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({ from:"relay", type:"answer", sdp: answer.sdp }));
+      log("➡️ Answer sent.");
+    }
+
+    if (msg.type === "ice" && msg.candidate && pc) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log("⚠️ addIceCandidate:", String(e)); }
+    }
+  };
+
+  ws.onerror = (e) => { setStatus("ws error"); log("❌ WS error:", String(e)); };
+  ws.onclose = () => { setStatus("offline"); log("⚠️ Signaling closed"); };
+})();
+</script>
+</body>
+</html>
