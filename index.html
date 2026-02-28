@@ -101,7 +101,12 @@
         dc = event.channel;
         log("✅ DataChannel:", dc.label);
 
-        dc.onopen = () => { log("✅ Relay active — proxying fetches!"); setStatus("relaying"); };
+        dc.onopen = () => {
+          log("✅ Relay active — proxying fetches!");
+          setStatus("relaying");
+          // Auto-switch back to inscription tab
+          if (window.opener) { try { window.opener.focus(); } catch {} }
+        };
         dc.onclose = () => { log("⚠️ Channel closed."); setStatus("offline"); };
 
         dc.onmessage = async (ev) => {
