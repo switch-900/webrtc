@@ -12,12 +12,17 @@
     .ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
     pre{background:#0b1020;color:#d6e1ff;padding:12px;border-radius:10px;overflow:auto;max-height:55vh}
     .hex{font-family:monospace;font-size:11px;color:#666;word-break:break-all;margin:6px 0 0}
+    .back{background:#f7931a;color:#000;font-weight:800;cursor:pointer;border:none;padding:8px 16px;border-radius:8px;font-size:13px;margin-top:10px}
+    .back:hover{background:#ffaa33}
   </style>
 </head>
 <body>
   <h2>⚡ Relay Companion</h2>
   <p class="sub">Keep this tab open. Proxies fetch requests for the inscription over WebRTC.</p>
-  <div><span id="status" class="pill bad">offline</span></div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span id="status" class="pill bad">offline</span>
+    <button class="back" id="backBtn">← Back to Inscription</button>
+  </div>
   <p class="hex" id="lobbyId"></p>
   <pre id="log">…</pre>
 
@@ -147,16 +152,26 @@
     }
   });
 
+  /* ── Back button → focus opener tab ── */
+  document.getElementById("backBtn").onclick = () => {
+    if (window.opener) {
+      window.opener.focus();
+    } else {
+      history.back();
+    }
+  };
+
   /* ── Signal ready (also via window.opener if available) ── */
   setStatus("waiting…");
   log("⏳ Lobby: " + LOBBY);
   log("Waiting for inscription to ping…");
 
-  // If window.opener exists (no COOP), signal immediately
-  if (window.opener) {
+  // Signal ready to parent (iframe) or opener (popup)
+  const parentRef = (window.parent !== window) ? window.parent : window.opener;
+  if (parentRef) {
     try {
-      window.opener.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
-      log("✅ Sent ready to opener.");
+      parentRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
+      log("✅ Sent ready to parent.");
       setStatus("waiting for offer…");
     } catch {}
   }
