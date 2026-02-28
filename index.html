@@ -1,181 +1,111 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>V0.1 Relay Companion</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:14px;background:#0d0d0d;color:#ccc;text-align:center}
-    h2{color:#f7931a;margin:0 0 4px;font-size:16px}
-    .sub{opacity:.65;font-size:11px;margin:0 0 10px}
-    .pill{display:inline-block;padding:3px 12px;border-radius:99px;font-size:12px;font-weight:800}
-    .ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
-    pre{background:#0b1020;color:#d6e1ff;padding:8px;border-radius:8px;overflow:auto;max-height:120px;font-size:10px;text-align:left}
-    .hex{font-family:monospace;font-size:10px;color:#555;word-break:break-all;margin:4px 0}
-    .minbtn{background:#f7931a;color:#000;font-weight:900;cursor:pointer;border:none;padding:14px 32px;border-radius:12px;font-size:18px;margin:12px 0;display:block;width:100%}
-    .minbtn:hover{background:#ffaa33}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>⚡ Game Relay</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;padding:14px;background:#0d0d0d;color:#ccc;text-align:center}
+h2{color:#f7931a;margin:0 0 4px;font-size:16px}
+.sub{opacity:.65;font-size:11px;margin:0 0 10px}
+.pill{display:inline-block;padding:3px 12px;border-radius:99px;font-size:12px;font-weight:800}
+.ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
+pre{background:#0b1020;color:#d6e1ff;padding:8px;border-radius:8px;overflow:auto;max-height:100px;font-size:10px;text-align:left;margin-top:8px}
+.minbtn{background:#f7931a;color:#000;font-weight:900;cursor:pointer;border:none;padding:14px 32px;border-radius:12px;font-size:18px;margin:12px 0;display:block;width:100%}
+.minbtn:hover{background:#ffaa33}
+.stats{font-size:12px;margin:6px 0;opacity:.8}
+</style>
 </head>
 <body>
-  <h2>⚡ Relay Active</h2>
-  <p class="sub">Don't close this window — it powers the data bridge.</p>
-  <span id="status" class="pill bad">offline</span>
-  <button class="minbtn" id="backBtn">⬇ Minimize & Return</button>
-  <p class="hex" id="lobbyId"></p>
-  <pre id="log">…</pre>
+<h2>⚡ Game Relay</h2>
+<p class="sub">Networking hub — connects your game to other players.</p>
+<span id="status" class="pill bad">offline</span>
+<div class="stats">Messages: <b id="msgCount">0</b></div>
+<button class="minbtn" id="backBtn">⬇ Minimize & Return</button>
+<pre id="log">…</pre>
 
 <script>
-(() => {
-  const logEl = document.getElementById("log");
-  const statusEl = document.getElementById("status");
-  const lobbyEl = document.getElementById("lobbyId");
+(()=>{
+const logEl=document.getElementById("log"),statusEl=document.getElementById("status");
+const msgCountEl=document.getElementById("msgCount");
 
-  const log = (...a) => {
-    const m = a.map(x => typeof x === "string" ? x : JSON.stringify(x, null, 2)).join(" ");
-    logEl.textContent = m + "\n\n" + logEl.textContent;
-  };
-  const setStatus = (t) => {
-    statusEl.textContent = t;
-    statusEl.className = "pill " + (t === "connected" || t === "relaying" ? "ok" : t.includes("…") ? "wait" : "bad");
+const log=(...a)=>{logEl.textContent=a.map(x=>typeof x==="string"?x:JSON.stringify(x)).join(" ")+"\n"+logEl.textContent.slice(0,2000)};
+const ss=(t)=>{statusEl.textContent=t;statusEl.className="pill "+(t==="relaying"?"ok":t.includes("…")?"wait":"bad")};
+
+/* ── Lobby from hash ── */
+const LOBBY=decodeURIComponent((location.hash||"").replace(/^#/,""));
+if(!LOBBY){ss("no lobby");log("❌ No lobby in URL hash.");return}
+
+const WSS_URL="wss://ord-webrtc-signal.getord.workers.dev/ws?room="+encodeURIComponent(LOBBY);
+
+let ws=null,openerRef=null,msgCount=0;
+
+/* ── Connect to signaling server as broadcast hub ── */
+function connectWS(){
+  ss("connecting…");log("⏳ Connecting to room: "+LOBBY.slice(0,16)+"…");
+  ws=new WebSocket(WSS_URL);
+
+  ws.onopen=()=>{
+    log("✅ WebSocket connected to room!");
+    ss("relaying");
+    /* Tell inscription we're ready */
+    if(openerRef)openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
   };
 
-  /* ── Lobby = inscription hex from URL hash ── */
-  const LOBBY = decodeURIComponent((location.hash || "").replace(/^#/, ""));
-  if (!LOBBY) {
-    setStatus("no lobby");
-    log("❌ No inscription hex in URL hash. Open this page from the inscription.");
+  ws.onmessage=(ev)=>{
+    msgCount++;msgCountEl.textContent=msgCount;
+    /* Forward messages from other relays → inscription */
+    if(openerRef){
+      try{
+        const msg=JSON.parse(ev.data);
+        openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"peer-msg",data:msg}),"*");
+      }catch(e){log("⚠️ Parse error: "+e)}
+    }
+  };
+
+  ws.onclose=()=>{
+    log("⚠️ WebSocket closed. Reconnecting in 3s…");
+    ss("reconnecting…");
+    setTimeout(connectWS,3000);
+  };
+  ws.onerror=()=>{log("❌ WebSocket error")};
+}
+
+/* ── Listen for postMessage from inscription ── */
+window.addEventListener("message",(ev)=>{
+  let msg;
+  try{msg=typeof ev.data==="string"?JSON.parse(ev.data):ev.data}catch{return}
+  if(!msg||msg.lobby!==LOBBY)return;
+  if(ev.source)openerRef=ev.source;
+
+  /* Ping → respond with relay-ready if WS is open */
+  if(msg.type==="ping"){
+    if(openerRef&&ws&&ws.readyState===1){
+      openerRef.postMessage(JSON.stringify({lobby:LOBBY,type:"relay-ready"}),"*");
+    }
     return;
   }
 
-  lobbyEl.textContent = "lobby: " + LOBBY.slice(0, 12) + "…" + LOBBY.slice(-6);
-
-  let pc = null, dc = null, fetchCount = 0;
-  let openerRef = null; // reference to inscription window (via event.source)
-
-  /* ── Listen for postMessage from inscription ── */
-  window.addEventListener("message", async (ev) => {
-    let msg;
-    try { msg = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data; } catch { return; }
-    if (!msg || msg.lobby !== LOBBY) return;
-
-    // Save reference to inscription window from event.source
-    if (ev.source) openerRef = ev.source;
-
-    /* Ping → respond with relay-ready */
-    if (msg.type === "ping") {
-      if (openerRef) {
-        openerRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
-      }
-      return;
-    }
-
-    /* Offer → create answer */
-    if (msg.type === "offer" && msg.sdp) {
-      log("⬅️ Offer received. Creating answer…");
-
-      pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-        ]
-      });
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate && openerRef) {
-          openerRef.postMessage(JSON.stringify({
-            lobby: LOBBY, type: "ice", candidate: e.candidate
-          }), "*");
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        log("🔌", pc.connectionState);
-        if (pc.connectionState === "connected") setStatus("connected");
-        if (pc.connectionState === "disconnected" || pc.connectionState === "failed") setStatus(pc.connectionState);
-      };
-
-      pc.ondatachannel = (event) => {
-        dc = event.channel;
-        log("✅ DataChannel:", dc.label);
-
-        dc.onopen = () => {
-          log("✅ Relay active — proxying fetches!");
-          setStatus("relaying");
-          // Auto-switch back to inscription tab
-          if (window.opener) { try { window.opener.focus(); } catch {} }
-        };
-        dc.onclose = () => { log("⚠️ Channel closed."); setStatus("offline"); };
-
-        dc.onmessage = async (ev) => {
-          let m;
-          try { m = JSON.parse(ev.data); } catch { return; }
-          if (m.type !== "fetch" || !m.id || !m.url) return;
-
-          fetchCount++;
-          log("➡️ [" + fetchCount + "] " + m.url);
-
-          try {
-            const resp = await fetch(m.url, {
-              method: m.method || "GET",
-              headers: m.headers || { accept: "application/json" },
-            });
-            const body = await resp.text();
-            dc.send(JSON.stringify({
-              type: "fetch_result", id: m.id, url: m.url,
-              ok: resp.ok, status: resp.status, statusText: resp.statusText,
-              headers: Object.fromEntries(resp.headers.entries()), body
-            }));
-            log("✅ [" + fetchCount + "] " + resp.status + " (" + body.length + "b)");
-          } catch (e) {
-            dc.send(JSON.stringify({
-              type: "fetch_result", id: m.id, url: m.url,
-              ok: false, status: 0, statusText: "FETCH_ERROR",
-              headers: {}, body: String(e?.message || e)
-            }));
-            log("❌ [" + fetchCount + "] " + String(e));
-          }
-        };
-      };
-
-      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      openerRef.postMessage(JSON.stringify({
-        lobby: LOBBY, type: "answer", sdp: answer.sdp
-      }), "*");
-      log("➡️ Answer sent. Connecting P2P…");
-      setStatus("connecting…");
-    }
-
-    /* ICE candidates */
-    if (msg.type === "ice" && msg.candidate && pc) {
-      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log("⚠️ ICE:", String(e)); }
-    }
-  });
-
-  /* ── Minimize & Return → shrink window + focus opener ── */
-  document.getElementById("backBtn").onclick = () => {
-    // Try to minimize the popup
-    try { window.resizeTo(200, 80); window.moveTo(screen.width - 220, screen.height - 120); } catch {}
-    if (window.opener) { try { window.opener.focus(); } catch {} }
-  };
-
-  /* ── Signal ready (also via window.opener if available) ── */
-  setStatus("waiting…");
-  log("⏳ Lobby: " + LOBBY);
-  log("Waiting for inscription to ping…");
-
-  // Signal ready to parent (iframe) or opener (popup)
-  const parentRef = (window.parent !== window) ? window.parent : window.opener;
-  if (parentRef) {
-    try {
-      parentRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
-      log("✅ Sent ready to parent.");
-      setStatus("waiting for offer…");
-    } catch {}
+  /* Forward game messages → signaling server → all other relays */
+  if(ws&&ws.readyState===1){
+    const fwd={...msg};delete fwd.lobby; /* strip lobby field to save bandwidth */
+    ws.send(JSON.stringify(fwd));
+    msgCount++;msgCountEl.textContent=msgCount;
   }
+});
+
+/* ── Minimize button ── */
+document.getElementById("backBtn").onclick=()=>{
+  try{window.resizeTo(200,80);window.moveTo(screen.width-220,screen.height-120)}catch{}
+  if(window.opener){try{window.opener.focus()}catch{}}
+};
+
+/* ── Start ── */
+const parentRef=(window.parent!==window)?window.parent:window.opener;
+if(parentRef)openerRef=parentRef;
+
+connectWS();
+log("Lobby: "+LOBBY.slice(0,20)+"…");
 })();
 </script>
 </body>
