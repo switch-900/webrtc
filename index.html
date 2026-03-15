@@ -1,185 +1,853 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Relay Companion</title>
+  <title>Manual WebRTC Chat + Pong</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;padding:14px;background:#0d0d0d;color:#ccc}
-    h2{color:#f7931a;margin:0 0 6px;font-size:18px}
-    .sub{opacity:.65;font-size:12px;margin:0 0 12px}
-    .pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:11px;font-weight:800}
-    .ok{background:#1a4d2e;color:#6fcf97}.bad{background:#4d1a1a;color:#f28b82}.wait{background:#4d3e1a;color:#f5c842}
-    pre{background:#0b1020;color:#d6e1ff;padding:12px;border-radius:10px;overflow:auto;max-height:55vh}
-    .hex{font-family:monospace;font-size:11px;color:#666;word-break:break-all;margin:6px 0 0}
-    .back{background:#f7931a;color:#000;font-weight:800;cursor:pointer;border:none;padding:8px 16px;border-radius:8px;font-size:13px;margin-top:10px}
-    .back:hover{background:#ffaa33}
+    :root{
+      --bg:#0b0b0f;
+      --panel:#12131a;
+      --panel2:#171923;
+      --line:#2a2d3a;
+      --text:#e7eaf3;
+      --muted:#9ba3b4;
+      --accent:#f7931a;
+      --ok:#2ecc71;
+      --bad:#ff6b6b;
+      --warn:#f5c842;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
+    .wrap{
+      max-width:1200px;
+      margin:0 auto;
+      padding:16px;
+    }
+    h1{
+      margin:0 0 8px;
+      color:var(--accent);
+      font-size:24px;
+    }
+    p.desc{
+      margin:0 0 16px;
+      color:var(--muted);
+      line-height:1.5;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns:1.1fr .9fr;
+      gap:16px;
+    }
+    @media (max-width: 900px){
+      .grid{grid-template-columns:1fr}
+    }
+    .card{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:14px;
+      box-shadow:0 8px 24px rgba(0,0,0,.25);
+    }
+    .card h2{
+      margin:0 0 10px;
+      font-size:18px;
+    }
+    .row{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .pill{
+      display:inline-block;
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:700;
+      background:#222;
+      border:1px solid var(--line);
+      color:var(--muted);
+    }
+    .pill.ok{background:rgba(46,204,113,.12); color:#8bf0b4; border-color:rgba(46,204,113,.35)}
+    .pill.bad{background:rgba(255,107,107,.12); color:#ff9a9a; border-color:rgba(255,107,107,.35)}
+    .pill.warn{background:rgba(245,200,66,.12); color:#ffe083; border-color:rgba(245,200,66,.35)}
+    button{
+      appearance:none;
+      border:none;
+      border-radius:10px;
+      padding:10px 14px;
+      font-weight:700;
+      cursor:pointer;
+      background:var(--accent);
+      color:#111;
+    }
+    button.secondary{
+      background:#222734;
+      color:var(--text);
+      border:1px solid var(--line);
+    }
+    button:disabled{
+      opacity:.5;
+      cursor:not-allowed;
+    }
+    textarea, input{
+      width:100%;
+      background:var(--panel2);
+      color:var(--text);
+      border:1px solid var(--line);
+      border-radius:10px;
+      padding:12px;
+      font:inherit;
+    }
+    textarea{
+      min-height:150px;
+      resize:vertical;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+      font-size:12px;
+      line-height:1.45;
+    }
+    .mini{
+      color:var(--muted);
+      font-size:12px;
+      margin:6px 0 10px;
+      line-height:1.45;
+    }
+    .steps{
+      margin:0;
+      padding-left:18px;
+      color:var(--muted);
+      line-height:1.55;
+    }
+    .log{
+      background:#0d1220;
+      color:#d8e2ff;
+      border:1px solid #1f2941;
+      border-radius:10px;
+      padding:10px;
+      height:200px;
+      overflow:auto;
+      white-space:pre-wrap;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+      font-size:12px;
+    }
+    .chat-box{
+      height:220px;
+      overflow:auto;
+      border:1px solid var(--line);
+      border-radius:10px;
+      background:var(--panel2);
+      padding:10px;
+    }
+    .msg{
+      margin:0 0 8px;
+      padding:8px 10px;
+      border-radius:10px;
+      max-width:85%;
+      word-break:break-word;
+    }
+    .msg.me{background:#2a2010; margin-left:auto}
+    .msg.peer{background:#1b2332}
+    .chat-input{
+      display:flex;
+      gap:10px;
+      margin-top:10px;
+    }
+    canvas{
+      width:100%;
+      max-width:500px;
+      background:#05070d;
+      border:1px solid var(--line);
+      border-radius:10px;
+      display:block;
+    }
+    .kbd{
+      display:inline-block;
+      padding:2px 7px;
+      border-radius:8px;
+      background:#1d2230;
+      border:1px solid #2f3648;
+      font-size:12px;
+      color:#d9e0f0;
+    }
   </style>
 </head>
 <body>
-  <h2>⚡ Relay Companion</h2>
-  <p class="sub">Keep this tab open. Proxies fetch requests for the inscription over WebRTC.</p>
-  <div style="display:flex;align-items:center;gap:10px">
-    <span id="status" class="pill bad">offline</span>
-    <button class="back" id="backBtn">← Back to Inscription</button>
+  <div class="wrap">
+    <h1>Manual WebRTC Chat + Pong</h1>
+    <p class="desc">
+      Same page for both peers. No signaling server. You manually copy/paste the connection blob between browsers.
+      Once connected, chat and a tiny two-player Pong demo open over a WebRTC data channel.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h2>1) Connection</h2>
+        <div class="row" style="margin-bottom:10px">
+          <span id="statusSignal" class="pill bad">signaling: idle</span>
+          <span id="statusPeer" class="pill bad">peer: disconnected</span>
+          <span id="statusDC" class="pill bad">data channel: closed</span>
+          <span id="rolePill" class="pill">role: none</span>
+        </div>
+
+        <div class="row" style="margin-bottom:10px">
+          <button id="btnCreateOffer">Create Offer</button>
+          <button id="btnAcceptOffer" class="secondary">Accept Offer / Create Answer</button>
+          <button id="btnAcceptAnswer" class="secondary">Accept Answer</button>
+          <button id="btnReset" class="secondary">Reset</button>
+        </div>
+
+        <div class="mini">
+          The app waits for ICE gathering to finish, then outputs a single copy/paste blob.
+          That means you usually only need to exchange one blob each way.
+        </div>
+
+        <label for="localBlob"><strong>Local blob</strong></label>
+        <textarea id="localBlob" readonly placeholder="Your generated offer/answer will appear here..."></textarea>
+        <div class="row" style="margin-top:8px;margin-bottom:14px">
+          <button id="btnCopyLocal" class="secondary">Copy Local Blob</button>
+        </div>
+
+        <label for="remoteBlob"><strong>Remote blob</strong></label>
+        <textarea id="remoteBlob" placeholder="Paste the other person's blob here..."></textarea>
+
+        <div class="mini">
+          <strong>How to use:</strong>
+          <ol class="steps">
+            <li>Peer A clicks <strong>Create Offer</strong>.</li>
+            <li>Peer A sends the generated blob to Peer B.</li>
+            <li>Peer B pastes it into <strong>Remote blob</strong> and clicks <strong>Accept Offer / Create Answer</strong>.</li>
+            <li>Peer B sends their generated answer blob back to Peer A.</li>
+            <li>Peer A pastes that answer into <strong>Remote blob</strong> and clicks <strong>Accept Answer</strong>.</li>
+          </ol>
+        </div>
+
+        <h2 style="margin-top:16px">2) Log</h2>
+        <div id="log" class="log"></div>
+      </div>
+
+      <div>
+        <div class="card" style="margin-bottom:16px">
+          <h2>Chat</h2>
+          <div id="chatBox" class="chat-box"></div>
+          <div class="chat-input">
+            <input id="chatInput" placeholder="Type a message..." />
+            <button id="btnSendChat" disabled>Send</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Pong Demo</h2>
+          <div class="mini">
+            Left paddle is Peer A. Right paddle is Peer B.<br>
+            Use <span class="kbd">W</span> / <span class="kbd">S</span> if you're Peer A, or
+            <span class="kbd">↑</span> / <span class="kbd">↓</span> if you're Peer B.
+          </div>
+          <canvas id="game" width="500" height="300"></canvas>
+          <div class="row" style="margin-top:10px">
+            <span id="gameStatus" class="pill warn">game: waiting for connection</span>
+            <button id="btnStartGame" class="secondary" disabled>Start / Reset Ball</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
-  <p class="hex" id="lobbyId"></p>
-  <pre id="log">…</pre>
 
 <script>
 (() => {
-  const logEl = document.getElementById("log");
-  const statusEl = document.getElementById("status");
-  const lobbyEl = document.getElementById("lobbyId");
+  const ICE_SERVERS = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" }
+  ];
 
-  const log = (...a) => {
-    const m = a.map(x => typeof x === "string" ? x : JSON.stringify(x, null, 2)).join(" ");
-    logEl.textContent = m + "\n\n" + logEl.textContent;
-  };
-  const setStatus = (t) => {
-    statusEl.textContent = t;
-    statusEl.className = "pill " + (t === "connected" || t === "relaying" ? "ok" : t.includes("…") ? "wait" : "bad");
+  const els = {
+    statusSignal: document.getElementById("statusSignal"),
+    statusPeer: document.getElementById("statusPeer"),
+    statusDC: document.getElementById("statusDC"),
+    rolePill: document.getElementById("rolePill"),
+    localBlob: document.getElementById("localBlob"),
+    remoteBlob: document.getElementById("remoteBlob"),
+    btnCreateOffer: document.getElementById("btnCreateOffer"),
+    btnAcceptOffer: document.getElementById("btnAcceptOffer"),
+    btnAcceptAnswer: document.getElementById("btnAcceptAnswer"),
+    btnCopyLocal: document.getElementById("btnCopyLocal"),
+    btnReset: document.getElementById("btnReset"),
+    btnSendChat: document.getElementById("btnSendChat"),
+    btnStartGame: document.getElementById("btnStartGame"),
+    chatInput: document.getElementById("chatInput"),
+    chatBox: document.getElementById("chatBox"),
+    log: document.getElementById("log"),
+    gameStatus: document.getElementById("gameStatus"),
+    canvas: document.getElementById("game"),
   };
 
-  /* ── Lobby = inscription hex from URL hash ── */
-  const LOBBY = decodeURIComponent((location.hash || "").replace(/^#/, ""));
-  if (!LOBBY) {
-    setStatus("no lobby");
-    log("❌ No inscription hex in URL hash. Open this page from the inscription.");
-    return;
+  let pc = null;
+  let dc = null;
+  let role = null; // "offerer" | "answerer"
+  let localPeerId = randHex(8);
+  let gameStarted = false;
+
+  const ctx = els.canvas.getContext("2d");
+
+  const game = {
+    width: 500,
+    height: 300,
+    paddleW: 10,
+    paddleH: 70,
+    ballSize: 10,
+    leftY: 115,
+    rightY: 115,
+    ballX: 245,
+    ballY: 145,
+    ballVX: 3.2,
+    ballVY: 2.3,
+    scoreLeft: 0,
+    scoreRight: 0,
+    keys: { w:false, s:false, up:false, down:false },
+  };
+
+  /* ── Helpers ── */
+
+  function log(...parts) {
+    const line = parts.map(v => typeof v === "string" ? v : JSON.stringify(v, null, 2)).join(" ");
+    els.log.textContent = line + "\n" + els.log.textContent;
   }
 
-  lobbyEl.textContent = "lobby: " + LOBBY.slice(0, 12) + "…" + LOBBY.slice(-6);
+  function setPill(el, text, kind) {
+    el.textContent = text;
+    el.className = "pill " + (kind || "");
+  }
 
-  let pc = null, dc = null, fetchCount = 0;
-  let openerRef = null; // reference to inscription window (via event.source)
+  function addChat(text, who = "peer") {
+    const div = document.createElement("div");
+    div.className = "msg " + who;
+    div.textContent = text;
+    els.chatBox.appendChild(div);
+    els.chatBox.scrollTop = els.chatBox.scrollHeight;
+  }
 
-  /* ── Listen for postMessage from inscription ── */
-  window.addEventListener("message", async (ev) => {
-    let msg;
-    try { msg = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data; } catch { return; }
-    if (!msg || msg.lobby !== LOBBY) return;
+  function randHex(bytes = 8) {
+    const arr = crypto.getRandomValues(new Uint8Array(bytes));
+    return [...arr].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
 
-    // Save reference to inscription window from event.source
-    if (ev.source) openerRef = ev.source;
+  /* ── Signal blob encode / decode ── */
+  // Minimal format: {"t":"offer|answer","s":"<sdp>"}
 
-    /* Ping → respond with relay-ready */
-    if (msg.type === "ping") {
-      if (openerRef) {
-        openerRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
+  function encodeSignalBlob(desc) {
+    return JSON.stringify({ t: desc.type, s: desc.sdp });
+  }
+
+  function decodeSignalBlob(raw) {
+    let p;
+    try { p = JSON.parse(raw); } catch { throw new Error("Not valid JSON"); }
+    if (!p || !p.t || !p.s) throw new Error("Blob missing t (type) or s (sdp)");
+    return { type: p.t, sdp: p.s };
+  }
+
+  /* ── ICE gathering helper ── */
+
+  function waitForIceComplete(pc) {
+    return new Promise((resolve) => {
+      if (pc.iceGatheringState === "complete") {
+        resolve();
+        return;
+      }
+      const timeout = setTimeout(() => {
+        log("ICE gathering timeout reached, using current local description.");
+        cleanup();
+        resolve();
+      }, 12000);
+
+      function onStateChange() {
+        if (pc.iceGatheringState === "complete") {
+          cleanup();
+          resolve();
+        }
+      }
+      function cleanup() {
+        clearTimeout(timeout);
+        pc.removeEventListener("icegatheringstatechange", onStateChange);
+      }
+      pc.addEventListener("icegatheringstatechange", onStateChange);
+    });
+  }
+
+  /* ── UI state sync ── */
+
+  function updateUiConnected() {
+    const dcOpen = dc && dc.readyState === "open";
+    els.btnSendChat.disabled = !dcOpen;
+    els.btnStartGame.disabled = !dcOpen;
+    setPill(els.gameStatus, dcOpen ? "game: connected" : "game: waiting for connection", dcOpen ? "ok" : "warn");
+  }
+
+  /* ── Data channel ── */
+
+  function attachDataChannel(channel) {
+    dc = channel;
+
+    dc.onopen = () => {
+      setPill(els.statusDC, "data channel: open", "ok");
+      log("Data channel opened");
+      updateUiConnected();
+      sendSystemHello();
+    };
+
+    dc.onclose = () => {
+      setPill(els.statusDC, "data channel: closed", "bad");
+      log("Data channel closed");
+      updateUiConnected();
+    };
+
+    dc.onerror = (e) => {
+      log("Data channel error:", e?.message || e);
+    };
+
+    dc.onmessage = (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      handleDataMessage(msg);
+    };
+  }
+
+  function handleDataMessage(msg) {
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "chat") {
+      addChat(msg.text, "peer");
+      return;
+    }
+
+    if (msg.type === "system") {
+      addChat("[peer] " + msg.text, "peer");
+      return;
+    }
+
+    if (msg.type === "game_state") {
+      if (role === "answerer") {
+        applyGameState(msg.state);
       }
       return;
     }
 
-    /* Offer → create answer */
-    if (msg.type === "offer" && msg.sdp) {
-      log("⬅️ Offer received. Creating answer…");
-
-      pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-        ]
-      });
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate && openerRef) {
-          openerRef.postMessage(JSON.stringify({
-            lobby: LOBBY, type: "ice", candidate: e.candidate
-          }), "*");
+    if (msg.type === "paddle") {
+      if (role === "offerer") {
+        if (typeof msg.y === "number") {
+          game.rightY = clamp(msg.y, 0, game.height - game.paddleH);
         }
-      };
+      }
+      return;
+    }
 
-      pc.onconnectionstatechange = () => {
-        log("🔌", pc.connectionState);
-        if (pc.connectionState === "connected") setStatus("connected");
-        if (pc.connectionState === "disconnected" || pc.connectionState === "failed") setStatus(pc.connectionState);
-      };
+    if (msg.type === "game_reset") {
+      resetBall(msg.direction || 1);
+      return;
+    }
+  }
 
-      pc.ondatachannel = (event) => {
-        dc = event.channel;
-        log("✅ DataChannel:", dc.label);
+  function send(msg) {
+    if (!dc || dc.readyState !== "open") return false;
+    dc.send(JSON.stringify(msg));
+    return true;
+  }
 
-        dc.onopen = () => {
-          log("✅ Relay active — proxying fetches!");
-          setStatus("relaying");
-          // Auto-switch back to inscription tab
-          if (window.opener) { try { window.opener.focus(); } catch {} }
-        };
-        dc.onclose = () => { log("⚠️ Channel closed."); setStatus("offline"); };
+  function sendSystemHello() {
+    send({
+      type: "system",
+      text: `connected (${role || "unknown"}) - peerId ${localPeerId}`
+    });
+  }
 
-        dc.onmessage = async (ev) => {
-          let m;
-          try { m = JSON.parse(ev.data); } catch { return; }
-          if (m.type !== "fetch" || !m.id || !m.url) return;
+  /* ── Lifecycle ── */
 
-          fetchCount++;
-          log("➡️ [" + fetchCount + "] " + m.url);
+  function safeClose(obj) {
+    try { obj && obj.close && obj.close(); } catch {}
+  }
 
-          try {
-            const resp = await fetch(m.url, {
-              method: m.method || "GET",
-              headers: m.headers || { accept: "application/json" },
-            });
-            const body = await resp.text();
-            dc.send(JSON.stringify({
-              type: "fetch_result", id: m.id, url: m.url,
-              ok: resp.ok, status: resp.status, statusText: resp.statusText,
-              headers: Object.fromEntries(resp.headers.entries()), body
-            }));
-            log("✅ [" + fetchCount + "] " + resp.status + " (" + body.length + "b)");
-          } catch (e) {
-            dc.send(JSON.stringify({
-              type: "fetch_result", id: m.id, url: m.url,
-              ok: false, status: 0, statusText: "FETCH_ERROR",
-              headers: {}, body: String(e?.message || e)
-            }));
-            log("❌ [" + fetchCount + "] " + String(e));
-          }
-        };
-      };
+  function resetAll() {
+    safeClose(dc);
+    safeClose(pc);
+    dc = null;
+    pc = null;
+    role = null;
+    els.localBlob.value = "";
+    els.remoteBlob.value = "";
+    setPill(els.statusSignal, "signaling: idle", "bad");
+    setPill(els.statusPeer, "peer: disconnected", "bad");
+    setPill(els.statusDC, "data channel: closed", "bad");
+    els.rolePill.textContent = "role: none";
+    els.rolePill.className = "pill";
+    updateUiConnected();
+    log("Reset complete");
+    resetGameState();
+  }
 
-      await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
+  function createPeerConnection() {
+    const peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+    peer.onicegatheringstatechange = () => {
+      setPill(els.statusSignal, "signaling: " + peer.iceGatheringState, peer.iceGatheringState === "complete" ? "ok" : "warn");
+    };
+
+    peer.onconnectionstatechange = () => {
+      const s = peer.connectionState || "unknown";
+      setPill(els.statusPeer, "peer: " + s, s === "connected" ? "ok" : (s === "connecting" ? "warn" : "bad"));
+      log("Peer connection state:", s);
+      updateUiConnected();
+    };
+
+    peer.oniceconnectionstatechange = () => {
+      log("ICE connection state:", peer.iceConnectionState);
+    };
+
+    peer.ondatachannel = (ev) => {
+      log("Received data channel:", ev.channel.label);
+      attachDataChannel(ev.channel);
+    };
+
+    return peer;
+  }
+
+  /* ── Signaling flows ── */
+
+  async function createOfferFlow() {
+    try {
+      resetAll();
+      role = "offerer";
+      els.rolePill.textContent = "role: offerer";
+      els.rolePill.className = "pill ok";
+
+      pc = createPeerConnection();
+
+      attachDataChannel(pc.createDataChannel("chat-game"));
+      log("Created local data channel");
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      log("Local offer set");
+
+      await waitForIceComplete(pc);
+
+      const blob = encodeSignalBlob(pc.localDescription);
+
+      els.localBlob.value = blob;
+      setPill(els.statusSignal, "signaling: offer ready", "ok");
+      log("Offer blob ready. Send it to the other peer.");
+    } catch (err) {
+      log("Create offer failed:", String(err?.message || err));
+      alert("Create offer failed: " + String(err?.message || err));
+    }
+  }
+
+  async function acceptOfferCreateAnswerFlow() {
+    try {
+      const remoteBlobText = els.remoteBlob.value.trim();
+      resetAll();
+      role = "answerer";
+      els.rolePill.textContent = "role: answerer";
+      els.rolePill.className = "pill ok";
+
+      const blob = decodeSignalBlob(remoteBlobText);
+      if (blob.type !== "offer") {
+        throw new Error("Remote blob is not an offer");
+      }
+
+      pc = createPeerConnection();
+
+      await pc.setRemoteDescription(blob);
+      log("Remote offer applied");
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      log("Local answer set");
 
-      openerRef.postMessage(JSON.stringify({
-        lobby: LOBBY, type: "answer", sdp: answer.sdp
-      }), "*");
-      log("➡️ Answer sent. Connecting P2P…");
-      setStatus("connecting…");
+      await waitForIceComplete(pc);
+
+      const out = encodeSignalBlob(pc.localDescription);
+
+      els.localBlob.value = out;
+      setPill(els.statusSignal, "signaling: answer ready", "ok");
+      log("Answer blob ready. Send it back to the offerer.");
+    } catch (err) {
+      log("Accept offer / create answer failed:", String(err?.message || err));
+      alert("Accept offer / create answer failed: " + String(err?.message || err));
+    }
+  }
+
+  async function acceptAnswerFlow() {
+    try {
+      if (!pc) throw new Error("No active peer connection. Create an offer first.");
+      if (role !== "offerer") throw new Error("Only the offerer should accept an answer.");
+
+      const blob = decodeSignalBlob(els.remoteBlob.value.trim());
+      if (blob.type !== "answer") {
+        throw new Error("Remote blob is not an answer");
+      }
+
+      await pc.setRemoteDescription(blob);
+      log("Remote answer applied");
+      setPill(els.statusSignal, "signaling: complete", "ok");
+    } catch (err) {
+      log("Accept answer failed:", String(err?.message || err));
+      alert("Accept answer failed: " + String(err?.message || err));
+    }
+  }
+
+  async function copyLocalBlob() {
+    try {
+      if (!els.localBlob.value.trim()) return;
+      await navigator.clipboard.writeText(els.localBlob.value);
+      log("Local blob copied to clipboard");
+    } catch (err) {
+      log("Clipboard copy failed:", String(err?.message || err));
+      alert("Clipboard copy failed");
+    }
+  }
+
+  /* ── Chat ── */
+
+  function sendChat() {
+    const text = els.chatInput.value.trim();
+    if (!text) return;
+    if (!send({ type: "chat", text })) {
+      alert("Data channel not open");
+      return;
+    }
+    addChat(text, "me");
+    els.chatInput.value = "";
+  }
+
+  /* ── Game logic ── */
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function resetGameState() {
+    game.leftY = 115;
+    game.rightY = 115;
+    game.ballX = 245;
+    game.ballY = 145;
+    game.ballVX = 3.2;
+    game.ballVY = 2.3;
+    game.scoreLeft = 0;
+    game.scoreRight = 0;
+    gameStarted = false;
+    drawGame();
+  }
+
+  function resetBall(direction = 1) {
+    game.ballX = (game.width - game.ballSize) / 2;
+    game.ballY = (game.height - game.ballSize) / 2;
+    game.ballVX = (3 + Math.random() * 1.5) * direction;
+    game.ballVY = (Math.random() * 4 - 2) || 1.8;
+    gameStarted = true;
+  }
+
+  function startOrResetGame() {
+    if (!dc || dc.readyState !== "open") return;
+    if (role === "offerer") {
+      resetBall(Math.random() > 0.5 ? 1 : -1);
+      send({ type: "game_reset", direction: game.ballVX > 0 ? 1 : -1 });
+    } else {
+      send({ type: "system", text: "requested game reset" });
+    }
+  }
+
+  function applyGameState(state) {
+    if (!state) return;
+    game.leftY = state.leftY;
+    game.rightY = state.rightY;
+    game.ballX = state.ballX;
+    game.ballY = state.ballY;
+    game.scoreLeft = state.scoreLeft;
+    game.scoreRight = state.scoreRight;
+  }
+
+  function updateGameOfferer() {
+    const speed = 5;
+
+    if (game.keys.w) game.leftY -= speed;
+    if (game.keys.s) game.leftY += speed;
+    game.leftY = clamp(game.leftY, 0, game.height - game.paddleH);
+
+    if (!gameStarted) return;
+
+    game.ballX += game.ballVX;
+    game.ballY += game.ballVY;
+
+    // Top / bottom bounce
+    if (game.ballY <= 0) {
+      game.ballY = 0;
+      game.ballVY *= -1;
+    }
+    if (game.ballY + game.ballSize >= game.height) {
+      game.ballY = game.height - game.ballSize;
+      game.ballVY *= -1;
     }
 
-    /* ICE candidates */
-    if (msg.type === "ice" && msg.candidate && pc) {
-      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log("⚠️ ICE:", String(e)); }
+    // Left paddle collision
+    if (
+      game.ballX <= game.paddleW &&
+      game.ballY + game.ballSize >= game.leftY &&
+      game.ballY <= game.leftY + game.paddleH &&
+      game.ballVX < 0
+    ) {
+      game.ballX = game.paddleW;
+      game.ballVX *= -1.03;
+      game.ballVY += (game.ballY + game.ballSize / 2 - (game.leftY + game.paddleH / 2)) * 0.05;
     }
+
+    // Right paddle collision
+    const rightX = game.width - game.paddleW - game.ballSize;
+    if (
+      game.ballX >= rightX &&
+      game.ballY + game.ballSize >= game.rightY &&
+      game.ballY <= game.rightY + game.paddleH &&
+      game.ballVX > 0
+    ) {
+      game.ballX = rightX;
+      game.ballVX *= -1.03;
+      game.ballVY += (game.ballY + game.ballSize / 2 - (game.rightY + game.paddleH / 2)) * 0.05;
+    }
+
+    // Scoring
+    if (game.ballX < -20) {
+      game.scoreRight++;
+      resetBall(1);
+    } else if (game.ballX > game.width + 20) {
+      game.scoreLeft++;
+      resetBall(-1);
+    }
+
+    // Broadcast authoritative state
+    send({
+      type: "game_state",
+      state: {
+        leftY: game.leftY,
+        rightY: game.rightY,
+        ballX: game.ballX,
+        ballY: game.ballY,
+        scoreLeft: game.scoreLeft,
+        scoreRight: game.scoreRight
+      }
+    });
+  }
+
+  function updateGameAnswerer() {
+    const speed = 5;
+    if (game.keys.up) game.rightY -= speed;
+    if (game.keys.down) game.rightY += speed;
+    game.rightY = clamp(game.rightY, 0, game.height - game.paddleH);
+
+    send({ type: "paddle", y: game.rightY });
+  }
+
+  /* ── Rendering ── */
+
+  function drawGame() {
+    ctx.clearRect(0, 0, game.width, game.height);
+
+    // Background
+    ctx.fillStyle = "#05070d";
+    ctx.fillRect(0, 0, game.width, game.height);
+
+    // Centre line
+    ctx.strokeStyle = "#2f3648";
+    ctx.setLineDash([6, 6]);
+    ctx.beginPath();
+    ctx.moveTo(game.width / 2, 0);
+    ctx.lineTo(game.width / 2, game.height);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Paddles
+    ctx.fillStyle = "#f7931a";
+    ctx.fillRect(0, game.leftY, game.paddleW, game.paddleH);
+    ctx.fillRect(game.width - game.paddleW, game.rightY, game.paddleW, game.paddleH);
+
+    // Ball
+    ctx.fillStyle = "#e7eaf3";
+    ctx.fillRect(game.ballX, game.ballY, game.ballSize, game.ballSize);
+
+    // Scores
+    ctx.fillStyle = "#cdd6f4";
+    ctx.font = "bold 28px system-ui";
+    ctx.textAlign = "center";
+    ctx.fillText(String(game.scoreLeft), game.width * 0.25, 35);
+    ctx.fillText(String(game.scoreRight), game.width * 0.75, 35);
+
+    // Role hint
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#98a2b3";
+    ctx.font = "12px system-ui";
+    ctx.fillText(
+      role === "offerer" ? "You control LEFT paddle (W/S)" :
+      role === "answerer" ? "You control RIGHT paddle (↑/↓)" :
+      "Not connected",
+      12, game.height - 12
+    );
+  }
+
+  function tick() {
+    if (dc && dc.readyState === "open") {
+      if (role === "offerer") updateGameOfferer();
+      else if (role === "answerer") updateGameAnswerer();
+    }
+    drawGame();
+    requestAnimationFrame(tick);
+  }
+
+  /* ── Keyboard ── */
+
+  window.addEventListener("keydown", (e) => {
+    if (e.repeat) return;
+    if (e.key === "w" || e.key === "W") game.keys.w = true;
+    if (e.key === "s" || e.key === "S") game.keys.s = true;
+    if (e.key === "ArrowUp")   { game.keys.up = true;   e.preventDefault(); }
+    if (e.key === "ArrowDown") { game.keys.down = true;  e.preventDefault(); }
   });
 
-  /* ── Back button → focus opener tab ── */
-  document.getElementById("backBtn").onclick = () => {
-    if (window.opener) {
-      window.opener.focus();
-    } else {
-      history.back();
-    }
-  };
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "w" || e.key === "W") game.keys.w = false;
+    if (e.key === "s" || e.key === "S") game.keys.s = false;
+    if (e.key === "ArrowUp")   game.keys.up = false;
+    if (e.key === "ArrowDown") game.keys.down = false;
+  });
 
-  /* ── Signal ready (also via window.opener if available) ── */
-  setStatus("waiting…");
-  log("⏳ Lobby: " + LOBBY);
-  log("Waiting for inscription to ping…");
+  /* ── Event bindings ── */
 
-  // Signal ready to parent (iframe) or opener (popup)
-  const parentRef = (window.parent !== window) ? window.parent : window.opener;
-  if (parentRef) {
-    try {
-      parentRef.postMessage(JSON.stringify({ lobby: LOBBY, type: "relay-ready" }), "*");
-      log("✅ Sent ready to parent.");
-      setStatus("waiting for offer…");
-    } catch {}
-  }
+  els.btnCreateOffer.addEventListener("click", createOfferFlow);
+  els.btnAcceptOffer.addEventListener("click", acceptOfferCreateAnswerFlow);
+  els.btnAcceptAnswer.addEventListener("click", acceptAnswerFlow);
+  els.btnCopyLocal.addEventListener("click", copyLocalBlob);
+  els.btnReset.addEventListener("click", resetAll);
+  els.btnSendChat.addEventListener("click", sendChat);
+  els.btnStartGame.addEventListener("click", startOrResetGame);
+
+  els.chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendChat();
+  });
+
+  /* ── Boot ── */
+
+  resetGameState();
+  tick();
+
+  log("Ready.");
+  log("Local peerId:", localPeerId);
+  log("Open this same file in two browsers/tabs/devices.");
 })();
 </script>
 </body>
